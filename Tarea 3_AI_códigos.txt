@@ -1,0 +1,120 @@
+from pyspark.sql import SparkSession, functions as F
+from pyspark.sql.functions import split, col
+
+# ============================================
+# BATCH (SPARK) - PROCESAMIENTO POR LOTES
+# ============================================
+
+print("\n" + "="*60)
+print("BATCH (SPARK) - PROCESAMIENTO POR LOTES")
+print("="*60)
+
+# Crear sesion de Spark para batch
+spark = SparkSession.builder.appName("AnalisisResiduosBatch").getOrCreate()
+
+# Cargar archivo CSV con datos historicos de residuos
+df = spark.read.format('csv') \
+    .option('header', 'true') \
+    .option('inferSchema', 'true') \
+    .load('residuos.csv')
+
+# Mostrar estructura del dataset
+print("\n[1] ESTRUCTURA DEL DATASET:")
+print("Muestra los nombres de columnas y tipos de datos")
+df.printSchema()
+
+# Mostrar primeros registros
+print("\n[2] MUESTRA DE DATOS (primeros 5 registros):")
+print("Visualizacion inicial del contenido del archivo")
+df.show(5)
+
+# Analisis: Total de kilos por tipo de residuo
+print("\n[3] TOTAL DE KILOS POR TIPO DE RESIDUO:")
+print("Agrupa por tipo de residuo y suma los kilos recolectados")
+df.groupBy("tipo_residuo") \
+  .sum("kilos") \
+  .withColumnRenamed("sum(kilos)", "total_kilos") \
+  .orderBy("total_kilos", ascending=False) \
+  .show()
+
+# Analisis: Total general de residuos
+print("\n[4] TOTAL GENERAL DE KILOS RECOGIDOS:")
+print("Suma de todos los kilos de residuos recolectados")
+df.select(F.sum("kilos").alias("total_general")).show()
+
+# Analisis: Promedio de kilos por tipo
+print("\n[5] PROMEDIO DE KILOS POR TIPO DE RESIDUO:")
+print("Calcula el peso promedio por cada categoria de residuo")
+df.groupBy("tipo_residuo") \
+  .avg("kilos") \
+  .withColumnRenamed("avg(kilos)", "promedio_kilos") \
+  .show()
+
+# Analisis: Conteo de registros por tipo
+print("\n[6] NUMERO DE REGISTROS POR TIPO DE RESIDUO:")
+print("Cuantas veces aparece cada tipo de residuo en el dataset")
+df.groupBy("tipo_residuo") \
+  .count() \
+  .withColumnRenamed("count", "numero_registros") \
+  .show()
+
+# Cerrar sesion batch
+spark.stop()
+
+# ============================================
+# STREAMING (KAFKA + SPARK) - TIEMPO REAL
+# ============================================
+
+print("\n" + "="*60)
+print("STREAMING (KAFKA + SPARK) - PROCESAMIENTO EN TIEMPO REAL")
+print("="*60)
+
+# Crear nueva sesion para streaming
+spark_streaming = SparkSession.builder.appName("StreamingResiduos").getOrCreate()
+spark_streaming.sparkContext.setLogLevel("WARN")
+
+print("\n[1] CONECTANDO A KAFKA:")
+print("Leyendo datos del topic 'residuos' en Kafka")
+
+# Leer datos desde Kafka en tiempo real
+df_kafka = spark_streaming.readStream.format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "residuos") \
+    .option("startingOffsets", "latest") \
+    .load()
+
+print("\n[2] PROCESANDO MENSAJES:")
+print("Parseando mensajes con formato: tipo_residuo,cantidad_kilos")
+
+# Parsear mensajes de Kafka (formato: "plastico,5")
+datos_parseados = df_kafka.selectExpr("CAST(value AS STRING) as mensaje") \
+    .select(
+        split(col("mensaje"), ",").getItem(0).alias("tipo_residuo"),
+        split(col("mensaje"), ",").getItem(1).cast("int").alias("kilos")
+    )
+
+print("\n[3] CALCULANDO ESTADISTICAS EN VIVO:")
+print("Agrupando por tipo de residuo y sumando kilos en tiempo real")
+
+# Calcular sumas por tipo de residuo
+resultado_stream = datos_parseados.groupBy("tipo_residuo").sum("kilos")
+
+print("\n[4] MOSTRANDO RESULTADOS:")
+print("Los resultados se actualizan cada vez que llegan nuevos datos")
+
+# Mostrar resultados en consola
+query = resultado_stream.writeStream \
+    .outputMode("complete") \
+    .format("console") \
+    .option("truncade", "false") \
+    .start()
+
+print("\n" + "="*60)
+print("STREAMING ACTIVO")
+print("="*60)
+print("Para ver la interfaz web de Spark: http://localhost:4040")
+print("El productor debe enviar datos al topic 'residuos'")
+print("Presiona Ctrl+C para detener el streaming")
+print("="*60)
+
+query.awaitTermination()
